@@ -2555,11 +2555,19 @@ mfxStatus CEncodingPipeline::VPPOneFrame(const ExtendedSurface &In,
             sts = MFX_ERR_NONE; // ignore warnings if output is available
             if (m_nPerfOpt)
                 m_nVppSurfIdx++;
+            if (m_bAPI2XInternalMem) {
+                mfxStatus msts = In.pSurface->FrameInterface->Release(In.pSurface);
+                MSDK_CHECK_STATUS(msts, "mfxFrameSurfaceInterface->Release failed");
+            }
             break;
         }
         else {
             if (m_nPerfOpt)
                 m_nVppSurfIdx++;
+            if (m_bAPI2XInternalMem && In.pSurface) {
+                mfxStatus msts = In.pSurface->FrameInterface->Release(In.pSurface);
+                MSDK_CHECK_STATUS(msts, "mfxFrameSurfaceInterface->Release failed");
+            }
             break; // not a warning
         }
     }
@@ -2587,6 +2595,10 @@ mfxStatus CEncodingPipeline::EncodeOneFrame(const ExtendedSurface &In, sTask *&p
             sts = MFX_ERR_NONE; // ignore warnings if output is available
             if (m_nPerfOpt)
                 m_nEncSurfIdx++;
+            if (m_bAPI2XInternalMem && In.pSurface) {
+                mfxStatus msts = In.pSurface->FrameInterface->Release(In.pSurface);
+                MSDK_CHECK_STATUS(msts, "mfxFrameSurfaceInterface->Release failed");
+            }
             break;
         }
         else if (MFX_ERR_NOT_ENOUGH_BUFFER == sts) {
@@ -2598,6 +2610,11 @@ mfxStatus CEncodingPipeline::EncodeOneFrame(const ExtendedSurface &In, sTask *&p
             MSDK_IGNORE_MFX_STS(sts, MFX_ERR_MORE_BITSTREAM);
             if (m_nPerfOpt)
                 m_nEncSurfIdx++;
+
+             if (m_bAPI2XInternalMem && In.pSurface) {
+                mfxStatus msts = In.pSurface->FrameInterface->Release(In.pSurface);
+                MSDK_CHECK_STATUS(msts, "mfxFrameSurfaceInterface->Release failed");
+            }
             break;
         }
     }
@@ -2666,10 +2683,15 @@ mfxStatus CEncodingPipeline::Run() {
         sts = GetFreeTask(&pCurrentTask);
         MSDK_BREAK_ON_ERROR(sts);
 
-#if (MFX_VERSION >= 2000)
-        if (m_bAPI2XInternalMem == false)
+        #if (MFX_VERSION >= 2000)
+        if (m_bAPI2XInternalMem == true) {
+            sts = m_pmfxMemory->GetSurfaceForEncode(&vppSurface.pSurface);
+            MSDK_CHECK_STATUS(sts, "Unknown error in MFXMemory_GetSurfaceForEncode");
+        }
+        else
 #endif
         {
+
             // find free surface for encoder input
             if (m_nPerfOpt && !m_pmfxVPP) {
                 m_nEncSurfIdx %= m_nPerfOpt;
@@ -2678,46 +2700,50 @@ mfxStatus CEncodingPipeline::Run() {
                 m_nEncSurfIdx = GetFreeSurface(m_pEncSurfaces, m_EncResponse.NumFrameActual);
             }
             MSDK_CHECK_ERROR(m_nEncSurfIdx, MSDK_INVALID_SURF_IDX, MFX_ERR_MEMORY_ALLOC);
+            vppSurface.pSurface = &m_pEncSurfaces[m_nEncSurfIdx];
         }
 
-#if (MFX_VERSION >= 2000)
-        if (m_bAPI2XInternalMem == true)
-            preencSurface.pSurface = vppSurface.pSurface = NULL;
-        else
-#endif
             // point pSurf to encoder surface
-            preencSurface.pSurface = vppSurface.pSurface = &m_pEncSurfaces[m_nEncSurfIdx];
+        preencSurface.pSurface = vppSurface.pSurface;
 
         if (!bVppMultipleOutput) {
             if (!skipLoadingNextFrame) {
                 // if vpp is enabled find free surface for vpp input and point pSurf to vpp surface
-#if (MFX_VERSION >= 2000)
-                if (m_bAPI2XInternalMem == true) {
-                    sts = m_pmfxMemory->GetSurfaceForEncode(&vppSurface.pSurface);
-                    MSDK_CHECK_STATUS(sts, "Unknown error in MFXMemory_GetSurfaceForEncode");
-
-                    sts = vppSurface.pSurface->FrameInterface->Map(vppSurface.pSurface,
-                                                                   MFX_MAP_WRITE);
-                    MSDK_CHECK_STATUS(sts, "mfxFrameSurfaceInterface->Map failed");
-                }
-                else
-#endif
                     if (m_pmfxVPP) {
 #if defined(ENABLE_V4L2_SUPPORT)
                     if (isV4L2InputEnabled) {
                         m_nVppSurfIdx = v4l2Pipeline.GetOffQ();
                     }
 #else
-                    if (m_nPerfOpt) {
-                        m_nVppSurfIdx = m_nVppSurfIdx % m_nPerfOpt;
+       
+
+#if (MFX_VERSION >= 2000)
+                    if (m_bAPI2XInternalMem == true) {
+                        sts = m_pmfxMemory->GetSurfaceForVPPIn(&vppSurface.pSurface);
+                        MSDK_CHECK_STATUS(sts, "Unknown error in MFXMemory_GetSurfaceForEncode");                       
                     }
-                    else {
-                        m_nVppSurfIdx =
-                            GetFreeSurface(m_pVppSurfaces, m_VppResponse.NumFrameActual);
-                    }
-                    MSDK_CHECK_ERROR(m_nVppSurfIdx, MSDK_INVALID_SURF_IDX, MFX_ERR_MEMORY_ALLOC);
+                    else
 #endif
-                    vppSurface.pSurface = &m_pVppSurfaces[m_nVppSurfIdx];
+                    {
+                        if (m_nPerfOpt) {
+                            m_nVppSurfIdx = m_nVppSurfIdx % m_nPerfOpt;
+                        }
+                        else {
+                            m_nVppSurfIdx =
+                                GetFreeSurface(m_pVppSurfaces, m_VppResponse.NumFrameActual);
+                        }
+                        MSDK_CHECK_ERROR(m_nVppSurfIdx,
+                                         MSDK_INVALID_SURF_IDX,
+                                         MFX_ERR_MEMORY_ALLOC);
+#endif
+                        vppSurface.pSurface = &m_pVppSurfaces[m_nVppSurfIdx];
+                    }
+                }
+               
+                if (m_bAPI2XInternalMem == true) {
+                    
+                    sts = vppSurface.pSurface->FrameInterface->Map(vppSurface.pSurface, MFX_MAP_WRITE);
+                    MSDK_CHECK_STATUS(sts, "mfxFrameSurfaceInterface->Map failed");
                 }
 
                 vppSurface.pSurface->Info.FrameId.ViewId = currViewNum;
@@ -2743,8 +2769,8 @@ mfxStatus CEncodingPipeline::Run() {
                         vppSurface.pSurface->FrameInterface->Unmap(vppSurface.pSurface);
                     MSDK_CHECK_STATUS(msts, "mfxFrameSurfaceInterface->Unmap failed");
 
-                    msts = vppSurface.pSurface->FrameInterface->Release(vppSurface.pSurface);
-                    MSDK_CHECK_STATUS(msts, "mfxFrameSurfaceInterface->Release failed");
+//                    msts = vppSurface.pSurface->FrameInterface->Release(vppSurface.pSurface);
+//                    MSDK_CHECK_STATUS(msts, "mfxFrameSurfaceInterface->Release failed");
                 }
 
                 if (!m_bAPI2XPerf)
@@ -2832,8 +2858,10 @@ mfxStatus CEncodingPipeline::Run() {
             sts = GetFreeTask(&pCurrentTask);
             MSDK_BREAK_ON_ERROR(sts);
 #if (MFX_VERSION >= 2000)
-            if (m_bAPI2XInternalMem == true)
-                preencSurface.pSurface = nullptr;
+            if (m_bAPI2XInternalMem == true) {
+                sts = m_pmfxMemory->GetSurfaceForEncode(&preencSurface.pSurface);
+                MSDK_CHECK_STATUS(sts, "Unknown error in MFXMemory_GetSurfaceForEncode");
+            }
             else
 #endif
             {
